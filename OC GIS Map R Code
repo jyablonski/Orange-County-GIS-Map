@@ -1,0 +1,84 @@
+library(rayshader)
+library(sp)
+library(raster)
+library(scales)
+library(rgl)
+library(tidyverse)
+
+elevation1 = raster::raster("N33W118.hgt")
+
+height_shade(raster_to_matrix(elevation1)) %>%
+  plot_map()
+
+OC_r = raster::raster("LC08_L1TP_040037_20200423_20200424_01_RT_B2.TIF")
+OC_g = raster::raster("LC08_L1TP_040037_20200423_20200424_01_RT_B3.TIF")
+OC_b = raster::raster("LC08_L1TP_040037_20200423_20200424_01_RT_B4.TIF")
+
+OC_rbg = raster::stack(OC_r, OC_g, OC_b)
+raster::plotRGB(OC_rbg, scale=255^2)
+
+OC_rbg_corrected = sqrt(raster::stack(OC_r, OC_g, OC_b))
+raster::plotRGB(OC_rbg_corrected)
+
+raster::crs(OC_r)
+raster::crs(elevation1)
+
+crs(OC_r)
+
+# changing coordinate systems to match each other.
+elevation1_utm = raster::projectRaster(elevation1, crs = crs(OC_r), method = "bilinear")
+crs(elevation1_utm)
+
+bottom_left = c(y = -117.998813, x = 33.500840)
+top_right = c(y = -117.501682, x = 33.949714)
+
+extent_latlong = sp::SpatialPoints(rbind(bottom_left, top_right), proj4string=sp::CRS("+proj=longlat +ellps=WGS84 +datum=WGS84"))
+extent_utm = sp::spTransform(extent_latlong, raster::crs(elevation1_utm))
+
+e = raster::extent(extent_utm)
+e
+
+OC_rgb_cropped = raster::crop(OC_rbg_corrected, e)
+elevation_cropped = raster::crop(elevation1_utm, e)
+names(OC_rgb_cropped) = c("r","g","b")
+
+OC_r_cropped = rayshader::raster_to_matrix(OC_rgb_cropped$r)
+OC_g_cropped = rayshader::raster_to_matrix(OC_rgb_cropped$g)
+OC_b_cropped = rayshader::raster_to_matrix(OC_rgb_cropped$b)
+
+OC_matrix = rayshader::raster_to_matrix(elevation_cropped)
+OC_rgb_array = array(0,dim=c(nrow(OC_r_cropped),ncol(OC_r_cropped),3))
+
+OC_rgb_array[,,1] = OC_r_cropped/255 #Red layer
+OC_rgb_array[,,2] = OC_g_cropped/255 #Blue layer
+OC_rgb_array[,,3] = OC_b_cropped/255 #Green layer
+OC_rgb_array = aperm(OC_rgb_array, c(2,1,3))
+
+plot_map(OC_rgb_array)
+
+# recoloring scale
+OC_rgb_contrast = scales::rescale(OC_rgb_array,to=c(0,1))
+plot_map(OC_rgb_contrast)
+
+ggsave("OCMap.png", width = 9, height = 4)
+# rendering plot
+plot_3d(OC_rgb_contrast, OC_matrix, windowsize = c(1100,900), zscale = 15, shadowdepth = -50,
+        zoom=0.5, phi=45,theta=-45,fov=70, background = "#F2E1D0", shadowcolor = "#523E2B")
+render_snapshot(title_text = "Orange County, California | Imagery: Landsat 8 | DEM: 30m SRTM",
+                title_bar_color = "#1f5214", title_color = "white", title_bar_alpha = 1)
+
+
+# video
+angles= seq(0,360,length.out = 1441)[-1]
+for(i in 1:1440) {
+  render_camera(theta=-45+angles[i])
+  render_snapshot(filename = sprintf("OC%i.png", i), 
+                  title_text = "Orange County, California | Imagery: Landsat 8 | DEM: 30m SRTM",
+                  title_bar_color = "#1f5214", title_color = "white", title_bar_alpha = 1)
+}
+rgl::rgl.close()
+
+av::av_encode_video(sprintf("OC%d.png",seq(1,1440,by=1)), framerate = 30, output = "OC.mp4")
+
+rgl::rgl.close()
+system("ffmpeg -framerate 60 -i OC%d.png -pix_fmt yuv420p OC.mp4")
